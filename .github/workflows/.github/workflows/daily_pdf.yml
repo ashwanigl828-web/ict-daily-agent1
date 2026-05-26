@@ -1,0 +1,40 @@
+name: "📄 Daily PDF Generation"
+
+on:
+  schedule:
+    # Roz subah 8:00 AM IST = 2:30 AM UTC
+    - cron: "30 2 * * *"
+  
+  # Manual trigger bhi kar sakte ho
+  workflow_dispatch:
+
+jobs:
+  trigger-daily-pdf:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "⏰ Wake up Render (free tier sleep se jagao)"
+        run: |
+          echo "Waking up Render app..."
+          curl -s -o /dev/null -w "%{http_code}" https://${{ secrets.RENDER_APP_NAME }}.onrender.com/health || true
+          echo "Waiting 60 seconds for Render to wake up..."
+          sleep 60
+
+      - name: "🚀 Trigger Daily PDF Generation"
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "https://${{ secrets.RENDER_APP_NAME }}.onrender.com/api/trigger-daily" \
+            -H "X-API-Key: ${{ secrets.TRIGGER_API_KEY }}" \
+            -H "Content-Type: application/json")
+          
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          
+          echo "Response Code: $HTTP_CODE"
+          echo "Response Body: $BODY"
+          
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "❌ Trigger failed with status $HTTP_CODE"
+            exit 1
+          fi
+          
+          echo "✅ Daily PDF generation triggered successfully!"
