@@ -63,6 +63,92 @@ def health():
     })
 
 
+@app.route("/debug")
+def debug_check():
+    """Diagnostic endpoint — checks all services and configuration."""
+    checks = {}
+
+    # 1. Gemini API Key
+    key = config.GEMINI_API_KEY
+    checks["gemini_api_key"] = "✅ Set" if key and len(key) > 10 else "❌ MISSING — GEMINI_API_KEY set karo"
+
+    # 2. Supabase
+    checks["supabase_url"] = "✅ Set" if config.SUPABASE_URL and "supabase" in config.SUPABASE_URL else "❌ MISSING"
+    checks["supabase_key"] = "✅ Set" if config.SUPABASE_KEY and len(config.SUPABASE_KEY) > 20 else "❌ MISSING"
+    
+    # Test DB connection
+    try:
+        from database.db_manager import db
+        if db.client:
+            db.client.table("topic_history").select("id").limit(1).execute()
+            checks["supabase_connection"] = "✅ Connected"
+        else:
+            checks["supabase_connection"] = "❌ Client not initialized"
+    except Exception as e:
+        checks["supabase_connection"] = f"❌ Error: {str(e)[:200]}"
+
+    # 3. Cloudinary
+    checks["cloudinary_cloud"] = "✅ Set" if config.CLOUDINARY_CLOUD_NAME else "❌ MISSING"
+    checks["cloudinary_key"] = "✅ Set" if config.CLOUDINARY_API_KEY else "❌ MISSING"
+    checks["cloudinary_secret"] = "✅ Set" if config.CLOUDINARY_API_SECRET else "❌ MISSING"
+
+    # 4. WhatsApp (optional)
+    checks["whatsapp_token"] = "✅ Set (Auto Mode)" if config.WHATSAPP_ACCESS_TOKEN else "⚠️ Not set (Manual Mode — ye OK hai)"
+
+    # 5. App Config
+    checks["app_base_url"] = f"✅ {config.APP_BASE_URL}" if config.APP_BASE_URL and "onrender" in config.APP_BASE_URL else f"⚠️ {config.APP_BASE_URL}"
+    checks["trigger_api_key"] = "✅ Set" if config.TRIGGER_API_KEY else "❌ MISSING"
+
+    # 6. WeasyPrint
+    try:
+        import weasyprint
+        checks["weasyprint"] = f"✅ Installed (v{weasyprint.__version__})"
+    except ImportError:
+        checks["weasyprint"] = "❌ NOT INSTALLED — build.sh sahi se nahi chali"
+    except Exception as e:
+        checks["weasyprint"] = f"⚠️ Import error: {str(e)[:200]}"
+
+    # 7. Google Generative AI
+    try:
+        import google.generativeai as genai
+        checks["google_genai"] = "✅ Installed"
+    except ImportError:
+        checks["google_genai"] = "❌ NOT INSTALLED"
+
+    # 8. Test Gemini API
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=config.GEMINI_API_KEY)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content("Say hello in Hindi, just one word")
+        checks["gemini_api_test"] = f"✅ Working — response: {response.text[:50]}"
+    except Exception as e:
+        checks["gemini_api_test"] = f"❌ Error: {str(e)[:200]}"
+
+    # 9. Topics data
+    try:
+        import json
+        topics_file = config.DATA_DIR / "topics.json"
+        if topics_file.exists():
+            with open(topics_file, "r", encoding="utf-8") as f:
+                topics = json.load(f)
+            total = sum(len(v) for v in topics.values())
+            checks["topics_data"] = f"✅ {total} topics loaded"
+        else:
+            checks["topics_data"] = f"❌ topics.json not found at {topics_file}"
+    except Exception as e:
+        checks["topics_data"] = f"❌ Error: {str(e)[:100]}"
+
+    # 10. Output directory
+    checks["output_dir"] = "✅ Exists" if config.OUTPUT_DIR.exists() else "❌ Missing"
+
+    # Summary
+    errors = [k for k, v in checks.items() if "❌" in str(v)]
+    checks["_summary"] = f"{'❌ ' + str(len(errors)) + ' PROBLEMS FOUND' if errors else '✅ ALL OK'}"
+
+    return jsonify(checks)
+
+
 # ================================================================
 # Student Response Form
 # ================================================================
