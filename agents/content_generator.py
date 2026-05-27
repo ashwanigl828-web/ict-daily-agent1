@@ -1,37 +1,76 @@
 """
 ICT Daily Agent — Content Generation Agent
-Uses Google Gemini AI to generate engaging ICT content in Hindi with
-SVG diagrams, quiz questions, fun facts, and summaries.
+Uses Groq API (primary) or Google Gemini AI (fallback) to generate
+engaging ICT content in Hindi with SVG diagrams, quiz questions,
+fun facts, and summaries.
 """
 
 import json
 import logging
 import time
+import os
 from typing import Optional
-
-import google.generativeai as genai
 
 import config
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Gemini Configuration
+# AI Provider Selection: Groq (primary) → Gemini (fallback)
 # ---------------------------------------------------------------------------
-genai.configure(api_key=config.GEMINI_API_KEY)
+_USE_GROQ = bool(os.getenv("GROQ_API_KEY", ""))
+_USE_GEMINI = bool(config.GEMINI_API_KEY) and not _USE_GROQ
 
-_content_model = genai.GenerativeModel(
-    model_name=config.GEMINI_MODEL,
-    generation_config=genai.GenerationConfig(
-        temperature=0.8,
-        max_output_tokens=8192,
-        response_mime_type="application/json",
-    ),
-)
-
-# Maximum retries for Gemini API calls
+# Maximum retries for API calls
 _MAX_RETRIES = 3
 _RETRY_DELAY_BASE = 4  # seconds, exponential back-off base
+
+
+def _init_groq_client():
+    """Initialize Groq client."""
+    try:
+        from groq import Groq
+        api_key = os.getenv("GROQ_API_KEY", "")
+        client = Groq(api_key=api_key)
+        model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        logger.info(f"🚀 AI Provider: Groq ({model})")
+        return client, model
+    except ImportError:
+        logger.error("groq package not installed! Run: pip install groq")
+        return None, None
+
+
+def _init_gemini_model():
+    """Initialize Gemini model."""
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=config.GEMINI_API_KEY)
+        model = genai.GenerativeModel(
+            model_name=config.GEMINI_MODEL,
+            generation_config=genai.GenerationConfig(
+                temperature=0.8,
+                max_output_tokens=8192,
+                response_mime_type="application/json",
+            ),
+        )
+        logger.info(f"🚀 AI Provider: Gemini ({config.GEMINI_MODEL})")
+        return model
+    except Exception as e:
+        logger.error(f"Gemini initialization failed: {e}")
+        return None
+
+
+# Initialize the active provider
+_groq_client = None
+_groq_model = None
+_gemini_model = None
+
+if _USE_GROQ:
+    _groq_client, _groq_model = _init_groq_client()
+elif _USE_GEMINI:
+    _gemini_model = _init_gemini_model()
+else:
+    logger.warning("⚠️ No AI provider configured! Set GROQ_API_KEY or GEMINI_API_KEY.")
 
 
 def _build_prompt(
@@ -42,7 +81,7 @@ def _build_prompt(
     subtopics: list[str],
     improvement_hints: str,
 ) -> str:
-    """Build the full Gemini prompt for content generation.
+    """Build the full prompt for content generation.
 
     Args:
         topic_name: Topic title in Hindi.
@@ -156,14 +195,13 @@ def _build_prompt(
     return prompt
 
 
-def _parse_gemini_response(raw_text: str) -> dict:
-    """Parse and validate the JSON response from Gemini.
+def _parse_response(raw_text: str) -> dict:
+    """Parse and validate the JSON response from AI.
 
-    Handles minor formatting issues like markdown code fences that Gemini
-    sometimes wraps around JSON.
+    Handles minor formatting issues like markdown code fences.
 
     Args:
-        raw_text: The raw text from Gemini's response.
+        raw_text: The raw text from AI's response.
 
     Returns:
         Parsed and validated content dictionary.
@@ -184,7 +222,7 @@ def _parse_gemini_response(raw_text: str) -> dict:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         logger.error("JSON parse error: %s\nRaw text (first 500 chars): %s", exc, text[:500])
-        raise ValueError(f"Failed to parse Gemini response as JSON: {exc}") from exc
+        raise ValueError(f"Failed to parse AI response as JSON: {exc}") from exc
 
     # Validate required keys
     required_keys = [
@@ -193,7 +231,7 @@ def _parse_gemini_response(raw_text: str) -> dict:
     ]
     missing = [k for k in required_keys if k not in data]
     if missing:
-        raise ValueError(f"Gemini response missing required keys: {missing}")
+        raise ValueError(f"AI response missing required keys: {missing}")
 
     # Ensure correct types and apply defaults
     if not isinstance(data["diagrams"], list):
@@ -208,6 +246,42 @@ def _parse_gemini_response(raw_text: str) -> dict:
     return data
 
 
+def _call_groq(prompt: str) -> str:
+    """Call Groq API and return the raw text response."""
+    if not _groq_client:
+        raise RuntimeError("Groq client not initialized")
+    
+    chat_completion = _groq_client.chat.completions.create(
+        messages=[
+            {
+                "role": "system",
+                "content": "You are an expert Indian school teacher. Always respond with valid JSON only. No markdown, no code fences, no extra text."
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        model=_groq_model,
+        temperature=0.8,
+        max_completion_tokens=8192,
+        response_format={"type": "json_object"},
+    )
+    
+    return chat_completion.choices[0].message.content
+
+
+def _call_gemini(prompt: str) -> str:
+    """Call Gemini API and return the raw text response."""
+    if not _gemini_model:
+        raise RuntimeError("Gemini model not initialized")
+    
+    response = _gemini_model.generate_content(prompt)
+    if not response.text:
+        raise ValueError("Gemini returned an empty response.")
+    return response.text
+
+
 def generate_content(
     topic_name: str,
     class_standard: str,
@@ -216,7 +290,7 @@ def generate_content(
     subtopics: Optional[list[str]] = None,
     improvement_hints: str = "",
 ) -> dict:
-    """Generate complete ICT lesson content using Gemini AI.
+    """Generate complete ICT lesson content using Groq or Gemini AI.
 
     Args:
         topic_name: The topic title in Hindi.
@@ -245,23 +319,30 @@ def generate_content(
         improvement_hints=improvement_hints,
     )
 
+    # Determine which AI to call
+    if _USE_GROQ and _groq_client:
+        ai_call = _call_groq
+        provider_name = f"Groq ({_groq_model})"
+    elif _USE_GEMINI and _gemini_model:
+        ai_call = _call_gemini
+        provider_name = f"Gemini ({config.GEMINI_MODEL})"
+    else:
+        raise RuntimeError("❌ No AI provider configured! Set GROQ_API_KEY or GEMINI_API_KEY in environment.")
+
     last_error: Optional[Exception] = None
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             logger.info(
-                "Generating content for '%s' class %s (attempt %d/%d)",
-                topic_name, class_standard, attempt, _MAX_RETRIES,
+                "🤖 [%s] Generating content for '%s' class %s (attempt %d/%d)",
+                provider_name, topic_name, class_standard, attempt, _MAX_RETRIES,
             )
-            response = _content_model.generate_content(prompt)
-
-            if not response.text:
-                raise ValueError("Gemini returned an empty response.")
-
-            content = _parse_gemini_response(response.text)
+            
+            raw_text = ai_call(prompt)
+            content = _parse_response(raw_text)
 
             logger.info(
-                "Content generated successfully — title: '%s', diagrams: %d, quiz: %d",
+                "✅ Content generated — title: '%s', diagrams: %d, quiz: %d",
                 content.get("topic_title", "?"),
                 len(content.get("diagrams", [])),
                 len(content.get("quiz_questions", [])),
@@ -273,7 +354,7 @@ def generate_content(
             last_error = exc
 
         except Exception as exc:
-            logger.warning("Gemini API error on attempt %d: %s", attempt, exc)
+            logger.warning("API error on attempt %d: %s", attempt, exc)
             last_error = exc
 
         # Exponential back-off before retry
@@ -283,6 +364,6 @@ def generate_content(
             time.sleep(delay)
 
     # All retries exhausted
-    error_msg = f"Content generation failed after {_MAX_RETRIES} attempts. Last error: {last_error}"
+    error_msg = f"Content generation failed after {_MAX_RETRIES} attempts using {provider_name}. Last error: {last_error}"
     logger.error(error_msg)
     raise RuntimeError(error_msg)
