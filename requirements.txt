@@ -1,6 +1,9 @@
 # Google Gemini AI
 google-generativeai>=0.8.0
 
+# Groq AI
+groq>=0.9.0
+
 # Web Framework
 flask>=3.0.0
 gunicorn>=21.2.0
