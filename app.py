@@ -166,6 +166,44 @@ def debug_check():
 
 
 # ================================================================
+# PDF Direct Serve — Cloudinary bypass
+# ================================================================
+
+@app.route("/pdf/<path:filename>")
+def serve_pdf(filename: str):
+    """Serve a generated PDF directly from the server."""
+    from flask import send_from_directory
+    pdf_dir = str(config.OUTPUT_DIR)
+    try:
+        return send_from_directory(
+            pdf_dir,
+            filename,
+            mimetype="application/pdf",
+            as_attachment=False,  # Open in browser, not download
+        )
+    except FileNotFoundError:
+        return jsonify({"error": f"PDF not found: {filename}"}), 404
+
+
+@app.route("/pdf/list")
+def list_pdfs():
+    """List all generated PDFs with download links."""
+    pdf_dir = config.OUTPUT_DIR
+    if not pdf_dir.exists():
+        return jsonify({"pdfs": [], "count": 0})
+    
+    pdfs = []
+    for f in sorted(pdf_dir.glob("*.pdf"), key=lambda x: x.stat().st_mtime, reverse=True):
+        pdfs.append({
+            "filename": f.name,
+            "size_kb": round(f.stat().st_size / 1024, 1),
+            "url": f"{config.APP_BASE_URL}/pdf/{f.name}",
+        })
+    
+    return jsonify({"pdfs": pdfs, "count": len(pdfs)})
+
+
+# ================================================================
 # Student Response Form
 # ================================================================
 
