@@ -14,7 +14,7 @@ load_dotenv()
 # Google Gemini AI Configuration
 # ============================================================
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.0-flash"  # Free tier model
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
 
 
 # ============================================================
