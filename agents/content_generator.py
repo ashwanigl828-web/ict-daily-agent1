@@ -271,6 +271,31 @@ def _call_groq(prompt: str) -> str:
     return chat_completion.choices[0].message.content
 
 
+def _call_groq_with_model(prompt: str, model_name: str) -> str:
+    """Call Groq API with a specific model and return the raw text response."""
+    if not _groq_client:
+        raise RuntimeError("Groq client not initialized")
+    
+    chat_completion = _groq_client.chat.completions.create(
+        messages=[
+            {
+                "role": "system",
+                "content": "You are an expert Indian school teacher. Always respond with valid JSON only. No markdown, no code fences, no extra text."
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        model=model_name,
+        temperature=0.8,
+        max_completion_tokens=8192,
+        response_format={"type": "json_object"},
+    )
+    
+    return chat_completion.choices[0].message.content
+
+
 def _call_gemini(prompt: str) -> str:
     """Call Gemini API and return the raw text response."""
     if not _gemini_model:
@@ -319,51 +344,73 @@ def generate_content(
         improvement_hints=improvement_hints,
     )
 
-    # Determine which AI to call
+    # Build list of AI providers to try (with fallback models)
+    providers = []
+    
     if _USE_GROQ and _groq_client:
-        ai_call = _call_groq
-        provider_name = f"Groq ({_groq_model})"
-    elif _USE_GEMINI and _gemini_model:
-        ai_call = _call_gemini
-        provider_name = f"Gemini ({config.GEMINI_MODEL})"
-    else:
-        raise RuntimeError("❌ No AI provider configured! Set GROQ_API_KEY or GEMINI_API_KEY in environment.")
+        # Primary Groq model
+        providers.append(("groq", _groq_model))
+        # Fallback Groq models (separate per-model quotas!)
+        fallback_models = ["llama-3.1-8b-instant", "gemma2-9b-it", "llama-3.3-70b-versatile"]
+        for fm in fallback_models:
+            if fm != _groq_model:
+                providers.append(("groq", fm))
+    
+    if config.GEMINI_API_KEY:
+        providers.append(("gemini", config.GEMINI_MODEL))
+
+    if not providers:
+        raise RuntimeError("❌ No AI provider configured! Set GROQ_API_KEY or GEMINI_API_KEY.")
 
     last_error: Optional[Exception] = None
 
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            logger.info(
-                "🤖 [%s] Generating content for '%s' class %s (attempt %d/%d)",
-                provider_name, topic_name, class_standard, attempt, _MAX_RETRIES,
-            )
-            
-            raw_text = ai_call(prompt)
-            content = _parse_response(raw_text)
+    for provider_type, model_name in providers:
+        provider_label = f"{'Groq' if provider_type == 'groq' else 'Gemini'} ({model_name})"
+        
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                logger.info(
+                    "🤖 [%s] Generating content for '%s' class %s (attempt %d/%d)",
+                    provider_label, topic_name, class_standard, attempt, _MAX_RETRIES,
+                )
+                
+                if provider_type == "groq":
+                    raw_text = _call_groq_with_model(prompt, model_name)
+                else:
+                    raw_text = _call_gemini(prompt)
+                
+                content = _parse_response(raw_text)
 
-            logger.info(
-                "✅ Content generated — title: '%s', diagrams: %d, quiz: %d",
-                content.get("topic_title", "?"),
-                len(content.get("diagrams", [])),
-                len(content.get("quiz_questions", [])),
-            )
-            return content
+                logger.info(
+                    "✅ Content generated — title: '%s', diagrams: %d, quiz: %d",
+                    content.get("topic_title", "?"),
+                    len(content.get("diagrams", [])),
+                    len(content.get("quiz_questions", [])),
+                )
+                return content
 
-        except (ValueError, json.JSONDecodeError) as exc:
-            logger.warning("Parse error on attempt %d: %s", attempt, exc)
-            last_error = exc
+            except (ValueError, json.JSONDecodeError) as exc:
+                logger.warning("Parse error on attempt %d: %s", attempt, exc)
+                last_error = exc
 
-        except Exception as exc:
-            logger.warning("API error on attempt %d: %s", attempt, exc)
-            last_error = exc
+            except Exception as exc:
+                error_str = str(exc)
+                logger.warning("API error on attempt %d: %s", attempt, exc)
+                last_error = exc
+                
+                # If rate limit, skip to next model immediately
+                if "429" in error_str or "rate_limit" in error_str:
+                    logger.info("⚡ Rate limit hit — trying next model...")
+                    break
 
-        # Exponential back-off before retry
-        if attempt < _MAX_RETRIES:
-            delay = _RETRY_DELAY_BASE * (2 ** (attempt - 1))
-            logger.info("Retrying in %d seconds...", delay)
-            time.sleep(delay)
+            # Exponential back-off before retry
+            if attempt < _MAX_RETRIES:
+                delay = _RETRY_DELAY_BASE * (2 ** (attempt - 1))
+                logger.info("Retrying in %d seconds...", delay)
+                time.sleep(delay)
 
-    # All retries exhausted
-    error_msg = f"Content generation failed after {_MAX_RETRIES} attempts using {provider_name}. Last error: {last_error}"
+    # All providers exhausted
+    error_msg = f"Content generation failed after trying all providers. Last error: {last_error}"
     logger.error(error_msg)
     raise RuntimeError(error_msg)
+
