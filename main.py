@@ -10,6 +10,7 @@ Ye file sab agents ko sequentially chalata hai:
 
 import logging
 import sys
+import time
 from datetime import date
 
 import config
@@ -122,16 +123,24 @@ def run_daily_job(target_classes: list[str] | None = None):
             logger.info(f"✅ PDF created: {pdf_path}")
 
             # ─────────────────────────────────────────────────
-            # Step 5: Upload PDF to Cloudinary & optionally send via WhatsApp
+            # Step 5: Generate PDF URL (direct serve + Cloudinary backup)
             # ─────────────────────────────────────────────────
-            logger.info(f"☁️ Step 5a: Uploading PDF to Cloudinary...")
+            # Primary: Direct server URL (always works)
+            direct_pdf_url = f"{config.APP_BASE_URL}/pdf/{pdf_path.name}"
+            logger.info(f"🔗 Direct PDF URL: {direct_pdf_url}")
+
+            # Backup: Try Cloudinary upload too
+            logger.info(f"☁️ Step 5a: Uploading PDF to Cloudinary (backup)...")
             from agents.whatsapp_sender import upload_pdf_to_cloudinary
+            cloudinary_url = ""
             try:
-                pdf_url = upload_pdf_to_cloudinary(str(pdf_path))
-                logger.info(f"✅ PDF uploaded: {pdf_url}")
+                cloudinary_url = upload_pdf_to_cloudinary(str(pdf_path))
+                logger.info(f"✅ Cloudinary backup: {cloudinary_url}")
             except Exception as e:
-                logger.error(f"❌ PDF upload failed: {e}")
-                pdf_url = ""
+                logger.warning(f"⚠️ Cloudinary upload failed (not critical): {e}")
+
+            # Use direct URL as primary (guaranteed to work)
+            pdf_url = direct_pdf_url
 
             response_url = f"{config.APP_BASE_URL}/form/{cls}/{date.today().isoformat()}"
 
@@ -176,8 +185,13 @@ def run_daily_job(target_classes: list[str] | None = None):
             }
 
         except Exception as e:
-            logger.error(f"❌ Error processing class {cls}: {e}", exc_info=True)
-            results[cls] = {"status": "error", "reason": str(e)}
+            logger.error(f"❌ Error processing class {cls}: {type(e).__name__}: {e}", exc_info=True)
+            results[cls] = {"status": "error", "reason": f"{type(e).__name__}: {str(e)[:200]}"}
+
+        # Delay between classes to avoid Gemini rate limits
+        if cls != classes[-1]:
+            logger.info(f"⏳ Waiting 15 seconds before next class (rate limit protection)...")
+            time.sleep(15)
 
     # ─────────────────────────────────────────────────
     # Step 7: Analyze yesterday's responses & send teacher report
