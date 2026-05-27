@@ -50,12 +50,17 @@ def upload_pdf_to_cloudinary(pdf_path: str) -> str:
 
     logger.info("Uploading PDF to Cloudinary: %s", path.name)
 
+    # Sanitize filename for Cloudinary public_id (remove ?, !, #, &, etc.)
+    import re
+    safe_id = re.sub(r'[^\w\-]', '_', path.stem)  # keep letters, digits, _, -
+    safe_id = re.sub(r'_+', '_', safe_id).strip('_')  # collapse multiple underscores
+
     try:
         result = cloudinary.uploader.upload(
             str(path),
             resource_type="raw",
             folder="ict-daily-pdfs",
-            public_id=path.stem,
+            public_id=safe_id,
             overwrite=True,
             invalidate=True,
         )
