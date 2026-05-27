@@ -59,10 +59,12 @@ def upload_pdf_to_cloudinary(pdf_path: str) -> str:
         result = cloudinary.uploader.upload(
             str(path),
             resource_type="raw",
+            type="upload",
             folder="ict-daily-pdfs",
             public_id=safe_id,
             overwrite=True,
             invalidate=True,
+            access_mode="public",
         )
         url: str = result["secure_url"]
         logger.info("PDF uploaded successfully: %s", url)
