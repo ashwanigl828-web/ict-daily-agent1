@@ -8,6 +8,7 @@ ICT Daily Agent — Flask Web Application
 """
 
 import logging
+import os
 import sys
 import threading
 from datetime import date, datetime, timedelta
@@ -108,22 +109,37 @@ def debug_check():
     except Exception as e:
         checks["weasyprint"] = f"⚠️ Import error: {str(e)[:200]}"
 
-    # 7. Google Generative AI
-    try:
-        import google.generativeai as genai
-        checks["google_genai"] = "✅ Installed"
-    except ImportError:
-        checks["google_genai"] = "❌ NOT INSTALLED"
+    # 7. AI Provider Check
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    checks["groq_api_key"] = "✅ Set (Primary)" if groq_key else "⚠️ Not set"
+    checks["gemini_api_key"] = "✅ Set" if config.GEMINI_API_KEY else "⚠️ Not set"
 
-    # 8. Test Gemini API
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=config.GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content("Say hello in Hindi, just one word")
-        checks["gemini_api_test"] = f"✅ Working — response: {response.text[:50]}"
-    except Exception as e:
-        checks["gemini_api_test"] = f"❌ Error: {str(e)[:200]}"
+    # 8. Test Active AI Provider (Groq first, then Gemini)
+    if groq_key:
+        try:
+            from groq import Groq
+            client = Groq(api_key=groq_key)
+            model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            resp = client.chat.completions.create(
+                messages=[{"role": "user", "content": "Say hello in Hindi, just one word"}],
+                model=model_name,
+                max_completion_tokens=20,
+            )
+            answer = resp.choices[0].message.content[:50]
+            checks["ai_test"] = f"✅ Groq ({model_name}) Working — {answer}"
+        except Exception as e:
+            checks["ai_test"] = f"❌ Groq Error: {str(e)[:200]}"
+    elif config.GEMINI_API_KEY:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=config.GEMINI_API_KEY)
+            model = genai.GenerativeModel(config.GEMINI_MODEL)
+            response = model.generate_content("Say hello in Hindi, just one word")
+            checks["ai_test"] = f"✅ Gemini ({config.GEMINI_MODEL}) Working — {response.text[:50]}"
+        except Exception as e:
+            checks["ai_test"] = f"❌ Gemini Error: {str(e)[:200]}"
+    else:
+        checks["ai_test"] = "❌ No AI provider configured! Set GROQ_API_KEY or GEMINI_API_KEY"
 
     # 9. Topics data
     try:
